@@ -1304,6 +1304,64 @@ struct ReviewSubmissionsWorkerContractTests {
         #expect(forwarded == reorderedQuery)
     }
 
+    @Test("item_limit is sent only with items and Apple's next link without it is accepted")
+    func itemLimitFollowsItemsInclude() async throws {
+        var query = reviewSubmissionListQuery(appID: "app-1", includes: "app,submittedByActor", itemLimit: nil)
+        query["cursor"] = "page-2"
+        let next = reviewSubmissionURL(path: "/v1/reviewSubmissions", query: query)
+        let arguments: [String: Value] = [
+            "app_id": .string("app-1"),
+            "include": .string("app,submittedByActor"),
+            "item_limit": .int(3)
+        ]
+
+        let firstPageTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionsListBody(nextURL: next, limit: 25))
+        ])
+        let firstPageWorker = try await makeReviewSubmissionsWorker(transport: firstPageTransport)
+        let firstPage = try await firstPageWorker.handleTool(.init(name: "review_submissions_list", arguments: arguments))
+        #expect(firstPage.isError != true)
+        let sentQuery = try reviewSubmissionQuery(try #require(await firstPageTransport.recordedRequests().first))
+        #expect(sentQuery["include"] == "app,submittedByActor")
+        #expect(sentQuery["limit[items]"] == nil)
+        #expect(try reviewSubmissionObject(firstPage.structuredContent)["next_url"] == .string(next))
+
+        let continuationTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: #"{"data":[],"links":{"self":"https://api.example.test/v1/reviewSubmissions"}}"#)
+        ])
+        let continuationWorker = try await makeReviewSubmissionsWorker(transport: continuationTransport)
+        var continuationArguments = arguments
+        continuationArguments["next_url"] = .string(next)
+        let continuation = try await continuationWorker.handleTool(.init(
+            name: "review_submissions_list",
+            arguments: continuationArguments
+        ))
+        #expect(continuation.isError != true)
+        #expect(try reviewSubmissionQuery(try #require(await continuationTransport.recordedRequests().first)) == query)
+
+        var missingItemLimit = reviewSubmissionListQuery(appID: "app-1", includes: "app,items", itemLimit: nil)
+        missingItemLimit["cursor"] = "page-2"
+        try await expectRejectedReviewSubmissionContinuation(
+            tool: "review_submissions_list",
+            arguments: ["app_id": .string("app-1"), "include": .string("app,items"), "item_limit": .int(3)],
+            path: "/v1/reviewSubmissions",
+            query: missingItemLimit
+        )
+
+        let getTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionBody(id: "sub-1"))
+        ])
+        let getWorker = try await makeReviewSubmissionsWorker(transport: getTransport)
+        let get = try await getWorker.handleTool(.init(
+            name: "review_submissions_get",
+            arguments: ["submission_id": .string("sub-1"), "include": .string("app"), "item_limit": .int(7)]
+        ))
+        #expect(get.isError != true)
+        let getQuery = try reviewSubmissionQuery(try #require(await getTransport.recordedRequests().first))
+        #expect(getQuery["include"] == "app")
+        #expect(getQuery["limit[items]"] == nil)
+    }
+
     @Test("continuation links still reject token drift inside set-valued query values")
     func multiValueContinuationStillRejectsTokenDrift() async throws {
         let baseQuery = reviewSubmissionListQuery(appID: "app-1")
@@ -2226,7 +2284,7 @@ private func reviewSubmissionListQuery(
     states: String? = nil,
     platforms: String? = nil,
     includes: String = "app,items,appStoreVersionForReview,submittedByActor,lastUpdatedByActor",
-    itemLimit: Int = 50,
+    itemLimit: Int? = 50,
     limit: Int = 25
 ) -> [String: String] {
     var query: [String: String] = [
@@ -2236,10 +2294,10 @@ private func reviewSubmissionListQuery(
         "fields[appStoreVersions]": reviewSubmissionAppVersionFields,
         "fields[actors]": reviewSubmissionActorFields,
         "include": includes,
-        "limit[items]": String(itemLimit),
         "filter[app]": appID,
         "limit": String(limit)
     ]
+    query["limit[items]"] = itemLimit.map(String.init)
     query["filter[state]"] = states
     query["filter[platform]"] = platforms
     return query

@@ -819,15 +819,18 @@ extension ReviewSubmissionsWorker {
     }
 
     private func submissionQuery(includes: [String], itemLimit: Int) -> [String: String] {
-        [
+        var query = [
             "fields[reviewSubmissions]": Self.submissionFields,
             "fields[apps]": Self.appFields,
             "fields[reviewSubmissionItems]": Self.itemIdentityFields,
             "fields[appStoreVersions]": Self.appStoreVersionFields,
             "fields[actors]": Self.actorFields,
-            "include": includes.joined(separator: ","),
-            "limit[items]": String(itemLimit)
+            "include": includes.joined(separator: ",")
         ]
+        if includes.contains("items") {
+            query["limit[items]"] = String(itemLimit)
+        }
+        return query
     }
 
     private func itemListQuery() -> [String: String] {
