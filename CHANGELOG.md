@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.5] - 2026-08-22
+
+### Fixed
+
+- Accept Apple's opaque actor identities on review submissions. `submittedByActor` and `lastUpdatedByActor` carry identifiers such as `USER:<uuid>`, `API_KEY:<key id>`, or `APPLE` that are not canonical URL path segments, so `review_submissions_list`, `review_submissions_get`, and every create, submit, or cancel response that echoed an actor failed local validation with `non-canonical resource ID`. Actor identities are now validated as opaque values (exact type, non-empty, no surrounding whitespace or control characters) in both relationships and included resources; app, version, and item identities keep the canonical check.
+- Accept Apple continuation links that reorder set-valued query parameters. Apple re-serializes `include`, `fields[...]`, and `filter[...]` values in a different order inside `links.next`, so every strict continuation scope rejected Apple's own next page with `does not preserve required query parameter`: `review_submissions_list` and `review_submissions_list_items` failed on the first page whenever the collection exceeded the page limit, and `app_versions_list` rejected its own `next_url`. Set-valued parameters now match when they carry the same tokens in any order; scalar controls, `sort`, `limit`, and the cursor stay byte-exact, and subsets, supersets, duplicates, or empty tokens are still rejected.
+- Accept a collection `links.self` on review submission and review submission item creation, app preview set creation, and app preview upload reservations, matching the screenshot fix from 4.1.4. Apple answers these `POST` requests with the collection URL, so the writes were committed on Apple's side while the tools reported `committed_unverified`. Foreign-origin and out-of-scope self links are still rejected.
+- Report the underlying reason when a review submission continuation link or required `links.self` is rejected, including the accepted paths, so a future contract change is diagnosable from a single call.
+
+### Compatibility
+
+- The public catalog remains at 502 tools with no renamed inputs or removed response fields. Continuation calls that repeat the originating query keep working; the only newly accepted difference is the order of tokens inside set-valued parameters.
+
 ## [4.1.4] - 2026-08-22
 
 ### Fixed

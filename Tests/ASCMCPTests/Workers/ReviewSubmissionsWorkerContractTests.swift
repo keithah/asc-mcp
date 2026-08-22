@@ -1111,6 +1111,364 @@ struct ReviewSubmissionsWorkerContractTests {
         #expect(networkArguments["platforms"] == .string("MAC_OS"))
     }
 
+    @Test("list and get accept Apple's opaque actor identities in relationships and included resources")
+    func listAndGetAcceptOpaqueActorIdentifiers() async throws {
+        let submittedBy = "USER:ec61c037-806d-4c93-8a7c-357bd4a748c6"
+        let lastUpdatedBy = "API_KEY:JKK95SHA2H"
+
+        let listTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionsListBody(actorID: submittedBy, limit: 25))
+        ])
+        let listWorker = try await makeReviewSubmissionsWorker(transport: listTransport)
+        let list = try await listWorker.handleTool(.init(
+            name: "review_submissions_list",
+            arguments: ["app_id": .string("app-1")]
+        ))
+        #expect(list.isError != true)
+        let listPayload = try reviewSubmissionObject(list.structuredContent)
+        let submissions = try #require(listPayload["submissions"]?.arrayValue)
+        let listed = try reviewSubmissionObject(submissions.first)
+        #expect(listed["submitted_by_actor_id"] == .string(submittedBy))
+        #expect(listed["last_updated_by_actor_id"] == .string(submittedBy))
+        #expect(listPayload["actors"]?.arrayValue?.count == 1)
+
+        let getTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionBody(
+                id: "sub-1",
+                includeContext: true,
+                submittedByActorID: submittedBy,
+                lastUpdatedByActorID: lastUpdatedBy
+            ))
+        ])
+        let getWorker = try await makeReviewSubmissionsWorker(transport: getTransport)
+        let get = try await getWorker.handleTool(.init(
+            name: "review_submissions_get",
+            arguments: ["submission_id": .string("sub-1")]
+        ))
+        #expect(get.isError != true)
+        let getPayload = try reviewSubmissionObject(get.structuredContent)
+        let submission = try reviewSubmissionObject(getPayload["submission"])
+        #expect(submission["submitted_by_actor_id"] == .string(submittedBy))
+        #expect(submission["last_updated_by_actor_id"] == .string(lastUpdatedBy))
+        #expect(getPayload["actors"]?.arrayValue?.count == 2)
+
+        let appleTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionBody(
+                id: "sub-1",
+                submittedByActorID: "APPLE",
+                lastUpdatedByActorID: "QVBJX0tFWXxhYmMrZGVmL2doaQ=="
+            ))
+        ])
+        let appleWorker = try await makeReviewSubmissionsWorker(transport: appleTransport)
+        let apple = try await appleWorker.handleTool(.init(
+            name: "review_submissions_get",
+            arguments: ["submission_id": .string("sub-1")]
+        ))
+        #expect(apple.isError != true)
+        let appleSubmission = try reviewSubmissionObject(try reviewSubmissionObject(apple.structuredContent)["submission"])
+        #expect(appleSubmission["submitted_by_actor_id"] == .string("APPLE"))
+        #expect(appleSubmission["last_updated_by_actor_id"] == .string("QVBJX0tFWXxhYmMrZGVmL2doaQ=="))
+    }
+
+    @Test("create submit and cancel accept Apple's opaque actor identities")
+    func createAndTransitionsAcceptOpaqueActorIdentifiers() async throws {
+        let submittedBy = "USER:ec61c037-806d-4c93-8a7c-357bd4a748c6"
+        let lastUpdatedBy = "API_KEY:JKK95SHA2H"
+        let createTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 201, body: reviewSubmissionBody(
+                id: "sub-1",
+                state: "READY_FOR_REVIEW",
+                includeContext: true,
+                submittedByActorID: submittedBy,
+                lastUpdatedByActorID: lastUpdatedBy
+            ))
+        ])
+        let createWorker = try await makeReviewSubmissionsWorker(transport: createTransport)
+        let create = try await createWorker.handleTool(.init(
+            name: "review_submissions_create",
+            arguments: ["app_id": .string("app-1")]
+        ))
+        #expect(create.isError != true)
+        let created = try reviewSubmissionObject(try reviewSubmissionObject(create.structuredContent)["submission"])
+        #expect(created["id"] == .string("sub-1"))
+        #expect(created["last_updated_by_actor_id"] == .string(lastUpdatedBy))
+
+        for tool in ["review_submissions_submit", "review_submissions_cancel"] {
+            let transport = TestHTTPTransport(responses: [
+                .init(statusCode: 200, body: reviewSubmissionBody(
+                    id: "sub-1",
+                    submittedByActorID: submittedBy,
+                    lastUpdatedByActorID: lastUpdatedBy
+                ))
+            ])
+            let worker = try await makeReviewSubmissionsWorker(transport: transport)
+            let result = try await worker.handleTool(.init(
+                name: tool,
+                arguments: ["submission_id": .string("sub-1")]
+            ))
+            #expect(result.isError != true, "\(tool)")
+            let submission = try reviewSubmissionObject(try reviewSubmissionObject(result.structuredContent)["submission"])
+            #expect(submission["submitted_by_actor_id"] == .string(submittedBy))
+        }
+    }
+
+    @Test("actor relationships still reject wrong types and empty padded or control identities")
+    func actorRelationshipsStillRejectInvalidIdentities() async throws {
+        let canonical = reviewSubmissionBody(id: "sub-1")
+        let wrongType = canonical.replacingOccurrences(
+            of: "\"submittedByActor\": {\"data\":{\"type\":\"actors\",\"id\":\"actor-1\"}}",
+            with: "\"submittedByActor\": {\"data\":{\"type\":\"users\",\"id\":\"actor-1\"}}"
+        )
+        #expect(wrongType != canonical)
+        let bodies = [
+            wrongType,
+            reviewSubmissionBody(id: "sub-1", submittedByActorID: ""),
+            reviewSubmissionBody(id: "sub-1", submittedByActorID: " actor-1"),
+            reviewSubmissionBody(id: "sub-1", submittedByActorID: "actor-1 "),
+            reviewSubmissionBody(id: "sub-1", lastUpdatedByActorID: "actor\\u0001"),
+            reviewSubmissionBody(id: "sub-1", includeContext: true, submittedByActorID: "actor-1\\t")
+        ]
+        for body in bodies {
+            let transport = TestHTTPTransport(responses: [.init(statusCode: 200, body: body)])
+            let worker = try await makeReviewSubmissionsWorker(transport: transport)
+            let result = try await worker.handleTool(.init(
+                name: "review_submissions_get",
+                arguments: ["submission_id": .string("sub-1")]
+            ))
+            #expect(result.isError == true)
+            let details = try reviewSubmissionObject(try reviewSubmissionObject(result.structuredContent)["details"])
+            #expect(details["type"] == .string("parsing"))
+        }
+    }
+
+    @Test("list accepts Apple continuation links that reorder set-valued query values")
+    func listAcceptsAppleReorderedMultiValueNextLink() async throws {
+        var reorderedQuery = reviewSubmissionAppleReorderedQuery(reviewSubmissionListQuery(appID: "app-1"))
+        #expect(reorderedQuery["include"] == "lastUpdatedByActor,submittedByActor,appStoreVersionForReview,items,app")
+        #expect(reorderedQuery["fields[reviewSubmissions]"] != reviewSubmissionListQuery(appID: "app-1")["fields[reviewSubmissions]"])
+        reorderedQuery["cursor"] = "page-2"
+        let next = reviewSubmissionURL(path: "/v1/reviewSubmissions", query: reorderedQuery)
+
+        let firstPageTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionsListBody(nextURL: next, limit: 25))
+        ])
+        let firstPageWorker = try await makeReviewSubmissionsWorker(transport: firstPageTransport)
+        let firstPage = try await firstPageWorker.handleTool(.init(
+            name: "review_submissions_list",
+            arguments: ["app_id": .string("app-1")]
+        ))
+        #expect(firstPage.isError != true)
+        #expect(try reviewSubmissionObject(firstPage.structuredContent)["next_url"] == .string(next))
+
+        let continuationTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: #"{"data":[],"links":{"self":"https://api.example.test/v1/reviewSubmissions"}}"#)
+        ])
+        let continuationWorker = try await makeReviewSubmissionsWorker(transport: continuationTransport)
+        let continuation = try await continuationWorker.handleTool(.init(
+            name: "review_submissions_list",
+            arguments: ["app_id": .string("app-1"), "next_url": .string(next)]
+        ))
+        #expect(continuation.isError != true)
+        let forwarded = try reviewSubmissionQuery(try #require(await continuationTransport.recordedRequests().first))
+        #expect(forwarded == reorderedQuery)
+    }
+
+    @Test("list_items accepts Apple continuation links that reorder include and field values")
+    func listItemsAcceptAppleReorderedIncludeNextLink() async throws {
+        var reorderedQuery = reviewSubmissionAppleReorderedQuery(reviewSubmissionItemListQuery(limit: 75))
+        #expect(reorderedQuery["include"] != reviewSubmissionItemListQuery(limit: 75)["include"])
+        reorderedQuery["cursor"] = "page-2"
+        let next = reviewSubmissionURL(path: "/v1/reviewSubmissions/sub-1/items", query: reorderedQuery)
+
+        let firstPageTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionItemsListBody(nextURL: next))
+        ])
+        let firstPageWorker = try await makeReviewSubmissionsWorker(transport: firstPageTransport)
+        let firstPage = try await firstPageWorker.handleTool(.init(
+            name: "review_submissions_list_items",
+            arguments: ["submission_id": .string("sub-1"), "limit": .int(75)]
+        ))
+        #expect(firstPage.isError != true)
+        #expect(try reviewSubmissionObject(firstPage.structuredContent)["next_url"] == .string(next))
+
+        let continuationTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: #"{"data":[],"links":{"self":"https://api.example.test/v1/reviewSubmissions/sub-1/items"}}"#)
+        ])
+        let continuationWorker = try await makeReviewSubmissionsWorker(transport: continuationTransport)
+        let continuation = try await continuationWorker.handleTool(.init(
+            name: "review_submissions_list_items",
+            arguments: ["submission_id": .string("sub-1"), "limit": .int(75), "next_url": .string(next)]
+        ))
+        #expect(continuation.isError != true)
+        let forwarded = try reviewSubmissionQuery(try #require(await continuationTransport.recordedRequests().first))
+        #expect(forwarded == reorderedQuery)
+    }
+
+    @Test("continuation links still reject token drift inside set-valued query values")
+    func multiValueContinuationStillRejectsTokenDrift() async throws {
+        let baseQuery = reviewSubmissionListQuery(appID: "app-1")
+        let original = try #require(baseQuery["include"])
+        for include in [
+            "app,items",
+            original + ",build",
+            "app,app,items,appStoreVersionForReview,submittedByActor,lastUpdatedByActor",
+            "app,,items,appStoreVersionForReview,submittedByActor,lastUpdatedByActor"
+        ] {
+            var query = baseQuery
+            query["include"] = include
+            query["cursor"] = "page-2"
+            try await expectRejectedReviewSubmissionContinuation(
+                tool: "review_submissions_list",
+                arguments: ["app_id": .string("app-1")],
+                path: "/v1/reviewSubmissions",
+                query: query
+            )
+        }
+    }
+
+    @Test("rejected continuation links name the drifting query parameter")
+    func nextLinkRejectionNamesTheDriftingParameter() async throws {
+        var query = reviewSubmissionListQuery(appID: "app-1")
+        query["include"] = "app,items"
+        query["cursor"] = "page-2"
+        let next = reviewSubmissionURL(path: "/v1/reviewSubmissions", query: query)
+        let transport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionsListBody(nextURL: next, limit: 25))
+        ])
+        let worker = try await makeReviewSubmissionsWorker(transport: transport)
+        let result = try await worker.handleTool(.init(
+            name: "review_submissions_list",
+            arguments: ["app_id": .string("app-1")]
+        ))
+        #expect(result.isError == true)
+        let details = try reviewSubmissionObject(try reviewSubmissionObject(result.structuredContent)["details"])
+        #expect(details["type"] == .string("parsing"))
+        let message = try #require(details["message"]?.stringValue)
+        #expect(message.contains("required query parameter 'include'"))
+    }
+
+    @Test("create and add_item accept a collection links.self on the 201 response")
+    func createAndAddItemAcceptCollectionSelfLinks() async throws {
+        let createTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 201, body: reviewSubmissionBody(
+                id: "sub-1",
+                state: "READY_FOR_REVIEW",
+                documentSelf: "https://api.example.test/v1/reviewSubmissions"
+            ))
+        ])
+        let createWorker = try await makeReviewSubmissionsWorker(transport: createTransport)
+        let create = try await createWorker.handleTool(.init(
+            name: "review_submissions_create",
+            arguments: ["app_id": .string("app-1"), "platform": .string("IOS")]
+        ))
+        #expect(create.isError != true)
+        let created = try reviewSubmissionObject(try reviewSubmissionObject(create.structuredContent)["submission"])
+        #expect(created["id"] == .string("sub-1"))
+
+        let addTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 201, body: reviewSubmissionItemBody(
+                id: "item-1",
+                relationshipName: "appStoreVersion",
+                documentSelf: "https://api.example.test/v1/reviewSubmissionItems"
+            ))
+        ])
+        let addWorker = try await makeReviewSubmissionsWorker(transport: addTransport)
+        let add = try await addWorker.handleTool(.init(
+            name: "review_submissions_add_item",
+            arguments: ["submission_id": .string("sub-1"), "app_store_version_id": .string("version-1")]
+        ))
+        #expect(add.isError != true)
+        let item = try reviewSubmissionObject(try reviewSubmissionObject(add.structuredContent)["item"])
+        #expect(item["id"] == .string("item-1"))
+    }
+
+    @Test("create and add_item still reject foreign or mismatched self links")
+    func createAndAddItemRejectForeignCollectionSelfLinks() async throws {
+        for documentSelf in [
+            "https://evil.example/v1/reviewSubmissions",
+            "https://api.example.test/v1/reviewSubmissionItems",
+            "https://api.example.test/v1/reviewSubmissions/other-id"
+        ] {
+            let transport = TestHTTPTransport(responses: [
+                .init(statusCode: 201, body: reviewSubmissionBody(id: "sub-1", documentSelf: documentSelf))
+            ])
+            let worker = try await makeReviewSubmissionsWorker(transport: transport)
+            let result = try await worker.handleTool(.init(
+                name: "review_submissions_create",
+                arguments: ["app_id": .string("app-1")]
+            ))
+            #expect(result.isError == true, "\(documentSelf)")
+            let payload = try reviewSubmissionObject(result.structuredContent)
+            #expect(payload["operationCommitState"] == .string("committed_unverified"))
+            let cause = try reviewSubmissionObject(payload["cause"])
+            #expect(cause["type"] == .string("mutation_unverified"))
+            let innerCause = try reviewSubmissionObject(cause["cause"])
+            #expect(innerCause["type"] == .string("parsing"))
+            #expect(innerCause["message"]?.stringValue?.contains("Accepted:") == true)
+        }
+
+        for documentSelf in [
+            "https://evil.example/v1/reviewSubmissionItems",
+            "https://api.example.test/v1/reviewSubmissions"
+        ] {
+            let transport = TestHTTPTransport(responses: [
+                .init(statusCode: 201, body: reviewSubmissionItemBody(
+                    id: "item-1",
+                    relationshipName: "appStoreVersion",
+                    documentSelf: documentSelf
+                ))
+            ])
+            let worker = try await makeReviewSubmissionsWorker(transport: transport)
+            let result = try await worker.handleTool(.init(
+                name: "review_submissions_add_item",
+                arguments: ["submission_id": .string("sub-1"), "app_store_version_id": .string("version-1")]
+            ))
+            #expect(result.isError == true, "\(documentSelf)")
+            let payload = try reviewSubmissionObject(result.structuredContent)
+            #expect(payload["operationCommitState"] == .string("committed_unverified"))
+        }
+    }
+
+    @Test("submit cancel and update_item keep requiring the resource self link")
+    func transitionsAndItemUpdateKeepStrictResourceSelfLink() async throws {
+        for tool in ["review_submissions_submit", "review_submissions_cancel"] {
+            let transport = TestHTTPTransport(responses: [
+                .init(statusCode: 200, body: reviewSubmissionBody(
+                    id: "sub-1",
+                    documentSelf: "https://api.example.test/v1/reviewSubmissions"
+                ))
+            ])
+            let worker = try await makeReviewSubmissionsWorker(transport: transport)
+            let result = try await worker.handleTool(.init(
+                name: tool,
+                arguments: ["submission_id": .string("sub-1")]
+            ))
+            #expect(result.isError == true, "\(tool)")
+            let payload = try reviewSubmissionObject(result.structuredContent)
+            #expect(payload["operationCommitState"] == .string("committed_unverified"))
+        }
+
+        let updateTransport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: reviewSubmissionMembershipBody(itemIDs: ["item-1"])),
+            .init(statusCode: 200, body: reviewSubmissionItemBody(
+                id: "item-1",
+                documentSelf: "https://api.example.test/v1/reviewSubmissionItems"
+            ))
+        ])
+        let updateWorker = try await makeReviewSubmissionsWorker(transport: updateTransport)
+        let update = try await updateWorker.handleTool(.init(
+            name: "review_submissions_update_item",
+            arguments: [
+                "submission_id": .string("sub-1"),
+                "item_id": .string("item-1"),
+                "resolved": .bool(false)
+            ]
+        ))
+        #expect(update.isError == true)
+        let updatePayload = try reviewSubmissionObject(update.structuredContent)
+        #expect(updatePayload["operationCommitState"] == .string("committed_unverified"))
+    }
+
     @Test("reads reject wrong types noncanonical IDs requested-ID drift and wrong ownership")
     func strictReadIdentityValidation() async throws {
         let getBodies = [
@@ -1940,13 +2298,16 @@ private func expectRejectedReviewSubmissionContinuation(
 private func reviewSubmissionBody(
     id: String,
     state: String = "UNRESOLVED_ISSUES",
-    includeContext: Bool = false
+    includeContext: Bool = false,
+    documentSelf: String? = nil,
+    submittedByActorID: String = "actor-1",
+    lastUpdatedByActorID: String = "actor-2"
 ) -> String {
     let included = includeContext
         ? """
           ,"included":[
-            {"type":"actors","id":"actor-1","attributes":{"actorType":"USER","userFirstName":"Ada"}},
-            {"type":"actors","id":"actor-2","attributes":{"actorType":"API_KEY","apiKeyId":"key-1"}},
+            {"type":"actors","id":"\(submittedByActorID)","attributes":{"actorType":"USER","userFirstName":"Ada"}},
+            {"type":"actors","id":"\(lastUpdatedByActorID)","attributes":{"actorType":"API_KEY","apiKeyId":"key-1"}},
             {"type":"reviewSubmissionItems","id":"item-1","attributes":{"state":"REJECTED"},"relationships":{"appStoreVersion":{"data":{"type":"appStoreVersions","id":"version-1"}}}}
           ]
           """
@@ -1965,19 +2326,24 @@ private func reviewSubmissionBody(
           "app": {"data":{"type":"apps","id":"app-1"}},
           "items": {"data":[{"type":"reviewSubmissionItems","id":"item-1"}]},
           "appStoreVersionForReview": {"data":{"type":"appStoreVersions","id":"version-1"}},
-          "submittedByActor": {"data":{"type":"actors","id":"actor-1"}},
-          "lastUpdatedByActor": {"data":{"type":"actors","id":"actor-2"}}
+          "submittedByActor": {"data":{"type":"actors","id":"\(submittedByActorID)"}},
+          "lastUpdatedByActor": {"data":{"type":"actors","id":"\(lastUpdatedByActorID)"}}
         },
         "links": {"self":"https://api.example.test/v1/reviewSubmissions/\(id)"}
       },
-      "links": {"self":"https://api.example.test/v1/reviewSubmissions/\(id)"}
+      "links": {"self":"\(documentSelf ?? "https://api.example.test/v1/reviewSubmissions/\(id)")"}
       \(included)
     }
     """
 }
 
-private func reviewSubmissionsListBody(nextURL: String) -> String {
-    """
+private func reviewSubmissionsListBody(
+    nextURL: String? = nil,
+    actorID: String = "actor-1",
+    limit: Int = 125
+) -> String {
+    let next = nextURL.map { ",\"next\":\"\($0)\"" } ?? ""
+    return """
     {
       "data": [
         {
@@ -1988,17 +2354,17 @@ private func reviewSubmissionsListBody(nextURL: String) -> String {
             "app": {"data":{"type":"apps","id":"app-1"}},
             "items": {"data":[{"type":"reviewSubmissionItems","id":"item-1"}]},
             "appStoreVersionForReview": {"data":{"type":"appStoreVersions","id":"version-1"}},
-            "submittedByActor": {"data":{"type":"actors","id":"actor-1"}},
-            "lastUpdatedByActor": {"data":{"type":"actors","id":"actor-1"}}
+            "submittedByActor": {"data":{"type":"actors","id":"\(actorID)"}},
+            "lastUpdatedByActor": {"data":{"type":"actors","id":"\(actorID)"}}
           }
         }
       ],
       "included": [
-        {"type":"actors","id":"actor-1","attributes":{"actorType":"USER","userFirstName":"Ada"}},
+        {"type":"actors","id":"\(actorID)","attributes":{"actorType":"USER","userFirstName":"Ada"}},
         {"type":"reviewSubmissionItems","id":"item-1","attributes":{"state":"REJECTED"}}
       ],
-      "links": {"self":"https://api.example.test/v1/reviewSubmissions","next":"\(nextURL)"},
-      "meta": {"paging":{"total":4,"limit":125}}
+      "links": {"self":"https://api.example.test/v1/reviewSubmissions"\(next)},
+      "meta": {"paging":{"total":4,"limit":\(limit)}}
     }
     """
 }
@@ -2007,12 +2373,22 @@ private func reviewSubmissionItemBody(
     id: String,
     relationshipName: String? = nil,
     resourceType: String = "appStoreVersions",
-    resourceID: String = "version-1"
+    resourceID: String = "version-1",
+    documentSelf: String? = nil
 ) -> String {
     let relationship = relationshipName.map {
         ",\"relationships\":{\"\($0)\":{\"data\":{\"type\":\"\(resourceType)\",\"id\":\"\(resourceID)\"}}}"
     } ?? ""
-    return "{\"data\":{\"type\":\"reviewSubmissionItems\",\"id\":\"\(id)\",\"attributes\":{\"state\":\"READY_FOR_REVIEW\"}\(relationship)},\"links\":{\"self\":\"https://api.example.test/v1/reviewSubmissionItems/\(id)\"}}"
+    let selfLink = documentSelf ?? "https://api.example.test/v1/reviewSubmissionItems/\(id)"
+    return "{\"data\":{\"type\":\"reviewSubmissionItems\",\"id\":\"\(id)\",\"attributes\":{\"state\":\"READY_FOR_REVIEW\"}\(relationship)},\"links\":{\"self\":\"\(selfLink)\"}}"
+}
+
+private func reviewSubmissionAppleReorderedQuery(_ query: [String: String]) -> [String: String] {
+    var reordered = query
+    for (name, value) in query where name == "include" || name.hasPrefix("fields[") || name.hasPrefix("filter[") {
+        reordered[name] = value.split(separator: ",").reversed().joined(separator: ",")
+    }
+    return reordered
 }
 
 private func reviewSubmissionItemsListBody(nextURL: String) -> String {

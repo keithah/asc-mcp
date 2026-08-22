@@ -10,7 +10,8 @@ public struct PaginationScope: Sendable, Equatable {
     /// Defines the exact collection and query invariants a pagination link must preserve.
     /// - Parameters:
     ///   - path: Absolute API collection path, including concrete parent identifiers.
-    ///   - requiredParameters: Query parameters whose values must remain unchanged across pages.
+    ///   - requiredParameters: Query parameters whose values must remain unchanged across pages. Set-valued
+    ///     parameters (`include`, `fields[...]`, `filter[...]`) match when they carry the same tokens in any order.
     ///   - allowedParameters: Optional strict query-name allowlist. Nil preserves forward-compatible Apple parameters.
     ///   - requiredNonEmptyParameters: Query parameters that must be present with a non-empty value.
     public init(
@@ -122,7 +123,8 @@ func validatedPaginationRequest(
     }
 
     for (name, value) in scope.requiredParameters {
-        guard parameters[name] == value else {
+        guard let observed = parameters[name],
+              continuationValuesMatch(name: name, observed: observed, expected: value) else {
             throw invalidPaginationURL("does not preserve required query parameter '\(name)'")
         }
     }
@@ -141,6 +143,29 @@ func validatedPaginationRequest(
     }
 
     return PaginationRequest(path: scope.path, parameters: parameters)
+}
+
+private func continuationValuesMatch(name: String, observed: String, expected: String) -> Bool {
+    if observed == expected {
+        return true
+    }
+    guard isSetValuedQueryParameter(name),
+          observed.contains(","),
+          expected.contains(",") else {
+        return false
+    }
+    let observedTokens = observed.split(separator: ",", omittingEmptySubsequences: false)
+    let expectedTokens = expected.split(separator: ",", omittingEmptySubsequences: false)
+    guard observedTokens.count == expectedTokens.count,
+          !observedTokens.contains(where: \.isEmpty),
+          !expectedTokens.contains(where: \.isEmpty) else {
+        return false
+    }
+    return observedTokens.sorted() == expectedTokens.sorted()
+}
+
+private func isSetValuedQueryParameter(_ name: String) -> Bool {
+    name == "include" || name.hasPrefix("fields[") || name.hasPrefix("filter[")
 }
 
 private func isCanonicalAPIPath(_ path: String) -> Bool {

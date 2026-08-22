@@ -161,6 +161,101 @@ struct PaginationHelperTests {
         }
     }
 
+    @Test func acceptsReorderedSetValuedRequiredParameters() throws {
+        let request = try validatedPaginationRequest(
+            "https://api.appstoreconnect.apple.com/v1/reviewSubmissions?include=appStoreVersionForReview%2Capp%2Citems&fields%5BreviewSubmissions%5D=state%2Cplatform&filter%5Bstate%5D=WAITING_FOR_REVIEW%2CREADY_FOR_REVIEW&filter%5Bapp%5D=app-1&limit=5&cursor=abc",
+            baseURL: baseURL,
+            scope: PaginationScope.strict(
+                path: "/v1/reviewSubmissions",
+                query: [
+                    "include": "app,items,appStoreVersionForReview",
+                    "fields[reviewSubmissions]": "platform,state",
+                    "filter[state]": "READY_FOR_REVIEW,WAITING_FOR_REVIEW",
+                    "filter[app]": "app-1",
+                    "limit": "5"
+                ]
+            )
+        )
+
+        #expect(request.parameters["include"] == "appStoreVersionForReview,app,items")
+        #expect(request.parameters["fields[reviewSubmissions]"] == "state,platform")
+        #expect(request.parameters["filter[state]"] == "WAITING_FOR_REVIEW,READY_FOR_REVIEW")
+        #expect(request.parameters["filter[app]"] == "app-1")
+        #expect(request.parameters["cursor"] == "abc")
+    }
+
+    @Test func rejectsSetValuedRequiredParameterTokenDrift() throws {
+        let expected = "app,items,appStoreVersionForReview"
+        let drifted = [
+            "app,items",
+            "app,items,appStoreVersionForReview,build",
+            "app,app,items",
+            "app,items,",
+            ",app,items,appStoreVersionForReview",
+            "app,,items,appStoreVersionForReview",
+            "App,items,appStoreVersionForReview",
+            "app, items,appStoreVersionForReview",
+            "app"
+        ]
+        for include in drifted {
+            var components = try #require(URLComponents(string: "https://api.appstoreconnect.apple.com/v1/reviewSubmissions"))
+            components.queryItems = [
+                URLQueryItem(name: "include", value: include),
+                URLQueryItem(name: "limit", value: "5"),
+                URLQueryItem(name: "cursor", value: "abc")
+            ]
+            let url = try #require(components.url).absoluteString
+            #expect(throws: ASCError.self, "include=\(include)") {
+                try validatedPaginationRequest(
+                    url,
+                    baseURL: baseURL,
+                    scope: PaginationScope.strict(
+                        path: "/v1/reviewSubmissions",
+                        query: ["include": expected, "limit": "5"]
+                    )
+                )
+            }
+        }
+    }
+
+    @Test func keepsNonSetValuedRequiredParametersByteExact() throws {
+        let scenarios: [(name: String, observed: String, expected: String)] = [
+            (name: "sort", observed: "-createdDate,rating", expected: "rating,-createdDate"),
+            (name: "limit", observed: "250", expected: "25"),
+            (name: "limit[items]", observed: "5,50", expected: "50,5"),
+            (name: "exists[build]", observed: "false,true", expected: "true,false"),
+            (name: "filter[app]", observed: "app-1,app-2", expected: "app-1")
+        ]
+        for scenario in scenarios {
+            var components = try #require(URLComponents(string: "https://api.appstoreconnect.apple.com/v1/customerReviews"))
+            components.queryItems = [
+                URLQueryItem(name: scenario.name, value: scenario.observed),
+                URLQueryItem(name: "cursor", value: "abc")
+            ]
+            let url = try #require(components.url).absoluteString
+            #expect(throws: ASCError.self, "\(scenario.name)=\(scenario.observed)") {
+                try validatedPaginationRequest(
+                    url,
+                    baseURL: baseURL,
+                    scope: PaginationScope(
+                        path: "/v1/customerReviews",
+                        requiredParameters: [scenario.name: scenario.expected]
+                    )
+                )
+            }
+        }
+
+        let exact = try validatedPaginationRequest(
+            "https://api.appstoreconnect.apple.com/v1/customerReviews?sort=rating%2C-createdDate&cursor=abc",
+            baseURL: baseURL,
+            scope: PaginationScope(
+                path: "/v1/customerReviews",
+                requiredParameters: ["sort": "rating,-createdDate"]
+            )
+        )
+        #expect(exact.parameters["sort"] == "rating,-createdDate")
+    }
+
     @Test func rejectsDuplicateQueryNames() {
         #expect(throws: ASCError.self) {
             try validatedPaginationRequest(
