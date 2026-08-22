@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.6] - 2026-08-22
+
+### Fixed
+
+- Send `limit[items]` on review submission reads only when `items` is part of `include`. Apple ignores the nested item limit for other includes and omits it from `links.next`, so `review_submissions_list` with an explicit `include` that excluded `items` rejected Apple's own next page with `does not preserve required query parameter 'limit[items]'` whenever the collection exceeded the page limit. `item_limit` is now applied only together with `items`, and continuation links are validated against the parameters that were actually sent.
+
+### Compatibility
+
+- The public catalog remains at 502 tools with no renamed inputs or removed response fields. `item_limit` passed with an `include` that lacks `items` is no longer forwarded to Apple; continuation calls repeat the same arguments as before.
+
 ## [4.1.5] - 2026-08-22
 
 ### Fixed

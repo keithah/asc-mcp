@@ -24,7 +24,7 @@ extension ReviewSubmissionsWorker {
                         values: Self.submissionIncludes
                     ),
                     "item_limit": integerSchema(
-                        description: "Maximum included review items (default: 50, max: 50)",
+                        description: "Maximum included review items; applies only when include contains items (default: 50, max: 50)",
                         maximum: 50,
                         defaultValue: 50
                     ),
@@ -59,7 +59,7 @@ extension ReviewSubmissionsWorker {
                         values: Self.submissionIncludes
                     ),
                     "item_limit": integerSchema(
-                        description: "Maximum included review items (default: 50, max: 50)",
+                        description: "Maximum included review items; applies only when include contains items (default: 50, max: 50)",
                         maximum: 50,
                         defaultValue: 50
                     )
