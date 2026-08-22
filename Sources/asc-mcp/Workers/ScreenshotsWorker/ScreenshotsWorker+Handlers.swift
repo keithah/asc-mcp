@@ -886,7 +886,8 @@ extension ScreenshotsWorker {
             try validateMediaDocumentSelf(
                 response.links.`self`,
                 expectedPath: try mediaResourcePath(kind: .previewSet, id: response.data.id),
-                context: "app-preview-set create response"
+                context: "app-preview-set create response",
+                alternatePaths: ["/v1/appPreviewSets"]
             )
         } catch {
             return await mediaCreateAcceptedResponseFailure(
@@ -1899,7 +1900,8 @@ extension ScreenshotsWorker {
                         data,
                         expectedID: nil,
                         expectedSetID: nil,
-                        context: "app preview reservation response"
+                        context: "app preview reservation response",
+                        allowCollectionSelf: true
                     )
                     semanticValidation.establishResourceID(preview.id)
                     return preview
@@ -2059,7 +2061,8 @@ extension ScreenshotsWorker {
         _ data: Data,
         expectedID: String?,
         expectedSetID: String?,
-        context: String
+        context: String,
+        allowCollectionSelf: Bool = false
     ) throws -> ASCPreview {
         let response = try JSONDecoder().decode(ASCPreviewResponse.self, from: data)
         try validatePreviewResource(
@@ -2071,7 +2074,8 @@ extension ScreenshotsWorker {
             response.links.`self`,
             expectedPath: try mediaResourcePath(kind: .preview, id: response.data.id),
             context: context,
-            allowQuery: false
+            allowQuery: false,
+            alternatePaths: allowCollectionSelf ? ["/v1/appPreviews"] : []
         )
         return response.data
     }
