@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.4] - 2026-08-22
+
+### Fixed
+
+- Accept a collection `links.self` on screenshot-set creation and screenshot upload reservations. Apple answers `POST /v1/appScreenshotSets` and `POST /v1/appScreenshots` with the collection URL rather than the created resource URL, so requiring the resource path rejected every real create: the set or reservation was committed on Apple's side while the tool reported `committed_unverified`, leaving orphaned sets and screenshots stuck in `AWAITING_UPLOAD` with no bytes. Foreign-origin and out-of-scope self links are still rejected.
+- Report the observed `links.self` value and the accepted paths in the failure message so a future contract change is diagnosable from a single call instead of requiring a live capture.
+
 ## [4.1.3] - 2026-07-21
 
 ### Fixed
