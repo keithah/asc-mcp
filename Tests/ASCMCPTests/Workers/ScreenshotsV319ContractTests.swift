@@ -573,6 +573,160 @@ struct ScreenshotsV319ContractTests {
         #expect(result.isError == true)
     }
 
+    @Test("preview set create accepts a collection links.self on the 201 response")
+    func previewSetCreateAcceptsCollectionSelf() async throws {
+        let transport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: screenshotsV319PreviewSets(
+                [],
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1"
+            )),
+            .init(statusCode: 201, body: screenshotsV319PreviewSet(
+                "set-1",
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1",
+                documentSelf: "/v1/appPreviewSets"
+            )),
+            .init(statusCode: 200, body: screenshotsV319PreviewSets(
+                ["set-1"],
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1"
+            ))
+        ])
+        let worker = try await screenshotsV319Worker(transport: transport)
+        let result = try await worker.handleTool(CallTool.Parameters(
+            name: "screenshots_create_preview_set",
+            arguments: [
+                "custom_product_page_localization_id": .string("cpp-loc-1"),
+                "preview_type": .string("IPHONE_67")
+            ]
+        ))
+
+        #expect(result.isError != true)
+        let root = try screenshotsV319Object(result.structuredContent)
+        #expect(root["operationCommitState"] == .string("committed"))
+    }
+
+    @Test("preview set create still rejects a foreign links.self on the 201 response")
+    func previewSetCreateRejectsForeignSelf() async throws {
+        let transport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: screenshotsV319PreviewSets(
+                [],
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1"
+            )),
+            .init(statusCode: 201, body: screenshotsV319PreviewSet(
+                "set-1",
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1",
+                documentSelf: "https://evil.example.com/v1/appPreviewSets"
+            )),
+            .init(statusCode: 200, body: screenshotsV319PreviewSets(
+                ["set-1"],
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1"
+            ))
+        ])
+        let worker = try await screenshotsV319Worker(transport: transport)
+        let result = try await worker.handleTool(CallTool.Parameters(
+            name: "screenshots_create_preview_set",
+            arguments: [
+                "custom_product_page_localization_id": .string("cpp-loc-1"),
+                "preview_type": .string("IPHONE_67")
+            ]
+        ))
+
+        #expect(result.isError == true)
+    }
+
+    @Test("upload reservations accept a collection links.self on the 201 response")
+    func uploadReservationAcceptsCollectionSelf() async throws {
+        let file = try screenshotsV319File(Data("hello".utf8))
+        defer { try? FileManager.default.removeItem(at: file) }
+        for type in ["appScreenshots", "appPreviews"] {
+            let isScreenshot = type == "appScreenshots"
+            let id = isScreenshot ? "shot-1" : "preview-1"
+            let apiTransport = TestHTTPTransport(responses: [
+                .init(statusCode: 201, body: screenshotsV319UploadResponse(
+                    type: type,
+                    id: id,
+                    setID: "set-1",
+                    fileName: file.lastPathComponent,
+                    fileSize: 5,
+                    state: "AWAITING_UPLOAD",
+                    includeUploadOperation: true,
+                    documentSelf: "/v1/\(type)",
+                    includeLineage: false,
+                    includeResourceSelf: false
+                )),
+                .init(statusCode: 200, body: screenshotsV319InventoryChildrenPage(
+                    isScreenshot: isScreenshot,
+                    ids: [id],
+                    total: 1,
+                    includeLineage: false,
+                    includeResourceSelf: false
+                )),
+                .init(statusCode: 200, body: screenshotsV319UploadResponse(
+                    type: type,
+                    id: id,
+                    setID: "set-1",
+                    fileName: file.lastPathComponent,
+                    fileSize: 5,
+                    state: "COMPLETE",
+                    includeLineage: false,
+                    includeResourceSelf: false
+                ))
+            ])
+            let uploadTransport = TestHTTPTransport(responses: [.init(statusCode: 200, body: "")])
+            let worker = try await screenshotsV319Worker(
+                apiTransport: apiTransport,
+                uploadTransport: uploadTransport
+            )
+            let result = try await worker.handleTool(CallTool.Parameters(
+                name: isScreenshot ? "screenshots_upload" : "screenshots_upload_preview",
+                arguments: ["set_id": .string("set-1"), "file_path": .string(file.path)]
+            ))
+            #expect(result.isError != true, "\(type)")
+            #expect(await apiTransport.recordedRequests().map(\.httpMethod) == ["POST", "GET", "PATCH"])
+            #expect(await uploadTransport.requestCount() == 1)
+        }
+    }
+
+    @Test("upload reservations still reject a foreign collection links.self")
+    func uploadReservationRejectsForeignCollectionSelf() async throws {
+        let file = try screenshotsV319File(Data("hello".utf8))
+        defer { try? FileManager.default.removeItem(at: file) }
+        for type in ["appScreenshots", "appPreviews"] {
+            let isScreenshot = type == "appScreenshots"
+            let id = isScreenshot ? "shot-1" : "preview-1"
+            let apiTransport = TestHTTPTransport(responses: [
+                .init(statusCode: 201, body: screenshotsV319UploadResponse(
+                    type: type,
+                    id: id,
+                    setID: "set-1",
+                    fileName: file.lastPathComponent,
+                    fileSize: 5,
+                    state: "AWAITING_UPLOAD",
+                    includeUploadOperation: true,
+                    documentSelf: "https://evil.example.com/v1/\(type)",
+                    includeLineage: false,
+                    includeResourceSelf: false
+                ))
+            ])
+            let uploadTransport = TestHTTPTransport(responses: [.init(statusCode: 200, body: "")])
+            let worker = try await screenshotsV319Worker(
+                apiTransport: apiTransport,
+                uploadTransport: uploadTransport
+            )
+            let result = try await worker.handleTool(CallTool.Parameters(
+                name: isScreenshot ? "screenshots_upload" : "screenshots_upload_preview",
+                arguments: ["set_id": .string("set-1"), "file_path": .string(file.path)]
+            ))
+            #expect(result.isError == true, "\(type)")
+            #expect(await uploadTransport.requestCount() == 0)
+        }
+    }
+
     @Test("screenshot set create uses full parent preflight exact 201 and scoped postflight")
     func screenshotSetCreate() async throws {
         let transport = TestHTTPTransport(responses: [

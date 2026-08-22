@@ -302,7 +302,8 @@ extension ReviewSubmissionsWorker {
             try validateDocumentSelf(
                 response.links.`self`,
                 expectedPath: "/v1/reviewSubmissions/\(try ASCPathSegment.encode(response.data.id))",
-                context: "review submission create"
+                context: "review submission create",
+                alternatePaths: ["/v1/reviewSubmissions"]
             )
             try validateIncludedResources(
                 response.included,
@@ -470,7 +471,8 @@ extension ReviewSubmissionsWorker {
             try validateDocumentSelf(
                 response.links.`self`,
                 expectedPath: "/v1/reviewSubmissionItems/\(try ASCPathSegment.encode(response.data.id))",
-                context: "review submission item create"
+                context: "review submission item create",
+                alternatePaths: ["/v1/reviewSubmissionItems"]
             )
             try validateIncludedResources(
                 response.included,
@@ -1105,16 +1107,33 @@ extension ReviewSubmissionsWorker {
     private func validateDocumentSelf(
         _ value: String,
         expectedPath: String,
-        context: String
+        context: String,
+        alternatePaths: [String] = []
     ) throws {
-        do {
-            _ = try httpClient.validatedScopedLink(
-                value,
-                scope: PaginationScope(path: expectedPath)
-            )
-        } catch {
-            throw ASCError.parsing("Apple returned an out-of-scope required links.self in \(context)")
+        var lastError: Error?
+        for candidate in [expectedPath] + alternatePaths {
+            do {
+                _ = try httpClient.validatedScopedLink(
+                    value,
+                    scope: PaginationScope(path: candidate)
+                )
+                return
+            } catch {
+                lastError = error
+            }
         }
+        let detail = lastError.map { Redactor.redact(validationFailureDetail($0)) } ?? "no candidate path matched"
+        let accepted = ([expectedPath] + alternatePaths).joined(separator: " | ")
+        throw ASCError.parsing(
+            "Apple returned an out-of-scope required links.self in \(context): \(detail). Accepted: \(accepted)"
+        )
+    }
+
+    private func validationFailureDetail(_ error: Error) -> String {
+        if let ascError = error as? ASCError, case .parsing(let message) = ascError {
+            return message
+        }
+        return error.localizedDescription
     }
 
     private func validateSubmissions(
@@ -1199,12 +1218,12 @@ extension ReviewSubmissionsWorker {
             expectedType: "appStoreVersions",
             context: "\(context) appStoreVersionForReview relationship"
         )
-        try validateOptionalRelationship(
+        try validateOpaqueRelationship(
             relationships?.submittedByActor?.data,
             expectedType: "actors",
             context: "\(context) submittedByActor relationship"
         )
-        try validateOptionalRelationship(
+        try validateOpaqueRelationship(
             relationships?.lastUpdatedByActor?.data,
             expectedType: "actors",
             context: "\(context) lastUpdatedByActor relationship"
@@ -1236,6 +1255,37 @@ extension ReviewSubmissionsWorker {
             expectedType: expectedType,
             context: context
         )
+    }
+
+    private func validateOpaqueRelationship(
+        _ identifier: ASCResourceIdentifier?,
+        expectedType: String,
+        context: String
+    ) throws {
+        guard let identifier else { return }
+        try validateOpaqueIdentity(
+            type: identifier.type,
+            id: identifier.id,
+            expectedType: expectedType,
+            context: context
+        )
+    }
+
+    private func validateOpaqueIdentity(
+        type: String,
+        id: String,
+        expectedType: String,
+        context: String
+    ) throws {
+        guard type == expectedType else {
+            throw ASCError.parsing("\(context) returned unexpected resource type '\(type)'")
+        }
+        let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty,
+              trimmedID == id,
+              !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw ASCError.parsing("\(context) returned an invalid resource ID")
+        }
     }
 
     private func validateItems(
@@ -1295,12 +1345,21 @@ extension ReviewSubmissionsWorker {
                     "Apple returned unexpected included resource type '\(resource.type)' in \(context)"
                 )
             }
-            try ASCNonIdempotentWriteRecovery.validateResourceIdentity(
-                type: resource.type,
-                id: resource.id,
-                expectedType: resource.type,
-                context: "\(context) included resources"
-            )
+            if resource.type == "actors" {
+                try validateOpaqueIdentity(
+                    type: resource.type,
+                    id: resource.id,
+                    expectedType: "actors",
+                    context: "\(context) included actors"
+                )
+            } else {
+                try ASCNonIdempotentWriteRecovery.validateResourceIdentity(
+                    type: resource.type,
+                    id: resource.id,
+                    expectedType: resource.type,
+                    context: "\(context) included resources"
+                )
+            }
             guard identities.insert("\(resource.type):\(resource.id)").inserted else {
                 throw ASCError.parsing(
                     "Apple returned duplicate included resource '\(resource.type):\(resource.id)' in \(context)"
@@ -1344,7 +1403,9 @@ extension ReviewSubmissionsWorker {
             do {
                 nextRequest = try httpClient.validatedScopedLink(nextURL, scope: paginationScope)
             } catch {
-                throw ASCError.parsing("Apple returned an out-of-scope links.next in \(context)")
+                throw ASCError.parsing(
+                    "Apple returned an out-of-scope links.next in \(context): \(Redactor.redact(validationFailureDetail(error)))"
+                )
             }
         } else {
             nextRequest = nil
