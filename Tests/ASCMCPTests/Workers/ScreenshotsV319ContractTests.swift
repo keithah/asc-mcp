@@ -504,6 +504,75 @@ struct ScreenshotsV319ContractTests {
         #expect(requests[1].url?.path == "/v1/appPreviewSets/preview-set-1")
     }
 
+    @Test("screenshot set create accepts a collection links.self on the 201 response")
+    func screenshotSetCreateAcceptsCollectionSelf() async throws {
+        // Apple answers POST /v1/appScreenshotSets with links.self pointing at the
+        // collection rather than the created resource. Requiring the resource path
+        // rejected every real create and left the set orphaned in App Store Connect.
+        let transport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: screenshotsV319ScreenshotSets(
+                [],
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1"
+            )),
+            .init(statusCode: 201, body: screenshotsV319ScreenshotSet(
+                "set-1",
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1",
+                documentSelf: "/v1/appScreenshotSets"
+            )),
+            .init(statusCode: 200, body: screenshotsV319ScreenshotSets(
+                ["set-1"],
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1"
+            ))
+        ])
+        let worker = try await screenshotsV319Worker(transport: transport)
+        let result = try await worker.handleTool(CallTool.Parameters(
+            name: "screenshots_create_set",
+            arguments: [
+                "custom_product_page_localization_id": .string("cpp-loc-1"),
+                "display_type": .string("APP_IPHONE_67")
+            ]
+        ))
+
+        #expect(result.isError != true)
+        let root = try screenshotsV319Object(result.structuredContent)
+        #expect(root["operationCommitState"] == .string("committed"))
+    }
+
+    @Test("screenshot set create still rejects a foreign links.self on the 201 response")
+    func screenshotSetCreateRejectsForeignSelf() async throws {
+        let transport = TestHTTPTransport(responses: [
+            .init(statusCode: 200, body: screenshotsV319ScreenshotSets(
+                [],
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1"
+            )),
+            .init(statusCode: 201, body: screenshotsV319ScreenshotSet(
+                "set-1",
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1",
+                documentSelf: "https://evil.example.com/v1/appScreenshotSets"
+            )),
+            .init(statusCode: 200, body: screenshotsV319ScreenshotSets(
+                ["set-1"],
+                parentType: "appCustomProductPageLocalizations",
+                parentID: "cpp-loc-1"
+            ))
+        ])
+        let worker = try await screenshotsV319Worker(transport: transport)
+        let result = try await worker.handleTool(CallTool.Parameters(
+            name: "screenshots_create_set",
+            arguments: [
+                "custom_product_page_localization_id": .string("cpp-loc-1"),
+                "display_type": .string("APP_IPHONE_67")
+            ]
+        ))
+
+        #expect(result.isError == true)
+    }
+
     @Test("screenshot set create uses full parent preflight exact 201 and scoped postflight")
     func screenshotSetCreate() async throws {
         let transport = TestHTTPTransport(responses: [
