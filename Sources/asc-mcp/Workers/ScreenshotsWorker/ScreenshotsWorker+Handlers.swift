@@ -217,7 +217,8 @@ extension ScreenshotsWorker {
             try validateMediaDocumentSelf(
                 response.links.`self`,
                 expectedPath: try mediaResourcePath(kind: .screenshotSet, id: response.data.id),
-                context: "screenshot-set create response"
+                context: "screenshot-set create response",
+                alternatePaths: ["/v1/appScreenshotSets"]
             )
         } catch {
             return await mediaCreateAcceptedResponseFailure(
@@ -1797,7 +1798,8 @@ extension ScreenshotsWorker {
                         data,
                         expectedID: nil,
                         expectedSetID: nil,
-                        context: "screenshot reservation response"
+                        context: "screenshot reservation response",
+                        allowCollectionSelf: true
                     )
                     semanticValidation.establishResourceID(screenshot.id)
                     return screenshot
@@ -2034,7 +2036,8 @@ extension ScreenshotsWorker {
         _ data: Data,
         expectedID: String?,
         expectedSetID: String?,
-        context: String
+        context: String,
+        allowCollectionSelf: Bool = false
     ) throws -> ASCScreenshot {
         let response = try JSONDecoder().decode(ASCScreenshotResponse.self, from: data)
         try validateScreenshotResource(
@@ -2046,7 +2049,8 @@ extension ScreenshotsWorker {
             response.links.`self`,
             expectedPath: try mediaResourcePath(kind: .screenshot, id: response.data.id),
             context: context,
-            allowQuery: false
+            allowQuery: false,
+            alternatePaths: allowCollectionSelf ? ["/v1/appScreenshots"] : []
         )
         return response.data
     }
@@ -2488,21 +2492,30 @@ extension ScreenshotsWorker {
         _ value: String,
         expectedPath: String,
         context: String,
-        allowQuery: Bool = true
+        allowQuery: Bool = true,
+        alternatePaths: [String] = []
     ) throws {
-        do {
-            _ = try httpClient.validatedScopedLink(
-                value,
-                scope: PaginationScope(
-                    path: expectedPath,
-                    allowedParameters: allowQuery ? nil : []
+        var lastError: Error?
+        for candidate in [expectedPath] + alternatePaths {
+            do {
+                _ = try httpClient.validatedScopedLink(
+                    value,
+                    scope: PaginationScope(
+                        path: candidate,
+                        allowedParameters: allowQuery ? nil : []
+                    )
                 )
-            )
-        } catch {
-            throw MediaArgumentError(
-                "Apple returned an invalid or out-of-origin required links.self in \(context): \(Redactor.redact(error.localizedDescription))"
-            )
+                return
+            } catch {
+                lastError = error
+            }
         }
+        let detail = lastError.map { Redactor.redact($0.localizedDescription) } ?? "no candidate path matched"
+        let accepted = ([expectedPath] + alternatePaths).joined(separator: " | ")
+        throw MediaArgumentError(
+            "Apple returned an invalid or out-of-origin required links.self in \(context): \(detail). "
+                + "Observed: \(Redactor.redact(value)). Accepted: \(accepted)"
+        )
     }
 
     private func mediaContinuationCursor(
