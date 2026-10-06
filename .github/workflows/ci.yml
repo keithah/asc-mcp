@@ -20,7 +20,7 @@ concurrency:
 jobs:
   promotion-lineage:
     name: Promotion Lineage
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     timeout-minutes: 5
     steps:
       - name: Checkout
@@ -133,7 +133,7 @@ jobs:
   tests:
     name: Tests
     needs: promotion-lineage
-    runs-on: macos-15
+    runs-on: tenki-macos-15-small
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -187,7 +187,7 @@ jobs:
   release-contract:
     name: Release & Apple Contract
     needs: promotion-lineage
-    runs-on: macos-15
+    runs-on: tenki-macos-15-small
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -319,7 +319,7 @@ jobs:
     name: Mint MCP Smoke & Publish Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [promotion-lineage, tests, release-contract]
-    runs-on: macos-15
+    runs-on: tenki-macos-15-small
     timeout-minutes: 30
     permissions:
       contents: write
